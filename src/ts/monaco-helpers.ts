@@ -1,13 +1,13 @@
 import { editor } from 'monaco-editor';
 
-export function createLyricistantTheme(monaco: typeof import('monaco-editor')): string {
+export function createLyricistantTheme(monaco: typeof import('monaco-editor'), darkMode: boolean): string {
     const themeName: string = 'lyricistant';
 
     let baseTheme: editor.BuiltinTheme;
-    if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-        baseTheme = 'vs';
-    } else {
+    if (darkMode) {
         baseTheme = 'vs-dark';
+    } else {
+        baseTheme = 'vs';
     }
 
     monaco.editor.defineTheme(themeName, {
@@ -40,7 +40,7 @@ export function createLyricistantLanguage(monaco: typeof import('monaco-editor')
     return languageName;
 }
 
-function getCssColor(variableName: string): string {
+export function getCssColor(variableName: string): string {
     return getComputedStyle(document.documentElement)
         .getPropertyValue(variableName)
         .trim();

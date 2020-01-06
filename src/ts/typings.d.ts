@@ -21,3 +21,11 @@ declare module 'syllable' {
 declare module 'monaco-loader' {
     export default function monacoLoader(): Promise<typeof monaco>
 }
+
+declare module 'snackbar' {
+    class snackbar {
+        show: (message: string) => void;
+        hide: () => void;
+    }
+    export = snackbar
+}

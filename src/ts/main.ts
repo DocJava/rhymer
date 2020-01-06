@@ -1,38 +1,46 @@
 import {
   app, BrowserWindow, dialog, ipcMain, IpcMainEvent, Menu, MenuItemConstructorOptions, MessageBoxReturnValue,
-  nativeTheme, OpenDialogReturnValue, SaveDialogReturnValue, systemPreferences
+  nativeTheme, OpenDialogReturnValue, SaveDialogReturnValue, systemPreferences, shell
 } from 'electron';
+import electronDebug from 'electron-debug';
 import { readFile, readFileSync, writeFile } from 'fs';
+import { createFileReference, isValidHeader, parseReferencedData, ReferencedData, getSupportedAudioFileExtensions } from './lyricistant-language-helpers';
 
 const recentFilesFilePath: string = `${app.getPath('userData')}/recent_files.json`;
 
+// Allows for opening dev-tools using F12, but only on dev builds.
+electronDebug({
+  devToolsMode: 'detach',
+  showDevTools: false
+});
+
 let mainWindow: BrowserWindow;
 let currentFilePath: string;
+let currentReferenceData: ReferencedData;
 
 function createWindow(): void {
-  let windowBackgroundColor: string;
-  if (nativeTheme.shouldUseDarkColors) {
-    windowBackgroundColor = '#141414';
-  } else {
-    windowBackgroundColor = '#fafafa';
-  }
-
   mainWindow = new BrowserWindow({
     width: 800,
     height: 600,
     minWidth: 600,
     minHeight: 400,
-    backgroundColor: windowBackgroundColor,
+    backgroundColor: getWindowBackgroundColor(),
+    show: false,
+    paintWhenInitiallyHidden: false,
     webPreferences: {
       nodeIntegration: true
     }
   });
-  mainWindow.webContents.send('dark-mode-toggled');
   mainWindow
     .loadFile('src/html/index.html')
     .catch(() => {
       dialog.showErrorBox('Error', 'Error trying to load the main page.');
     });
+
+  mainWindow.webContents.on('dom-ready', () => {
+    mainWindow.webContents.send('dark-mode-toggled', nativeTheme.shouldUseDarkColors);
+    mainWindow.show();
+  });
 
   mainWindow.on('closed', () => {
     // Dereference the window object, usually you would store windows
@@ -43,12 +51,10 @@ function createWindow(): void {
   setMenu();
 }
 
-systemPreferences.subscribeNotification(
-  'AppleInterfaceThemeChangedNotification',
-  () => {
-    mainWindow?.webContents.send('dark-mode-toggled');
-  }
-);
+nativeTheme.on('updated', () => {
+  mainWindow.setBackgroundColor(getWindowBackgroundColor());
+  mainWindow?.webContents.send('dark-mode-toggled', nativeTheme.shouldUseDarkColors);
+});
 
 app.on('ready', createWindow);
 
@@ -61,7 +67,11 @@ app.on('activate', () => {
 });
 
 ipcMain.on('editor-text', (_: IpcMainEvent, text: string) => {
-  writeFile(currentFilePath, text, (error: NodeJS.ErrnoException) => {
+  let writableText: string = text;
+  if (currentReferenceData?.dataType === 'file' && currentFilePath.endsWith('lyrics')) {
+    writableText = `${createFileReference(currentReferenceData.data)}${text}`;
+  }
+  writeFile(currentFilePath, writableText, (error: NodeJS.ErrnoException) => {
     mainWindow.webContents.send('file-save-ended', error, currentFilePath);
   });
 });
@@ -108,10 +118,27 @@ ipcMain.on('prompt-save-file-for-quit', () => {
 
 ipcMain.on('new-file-created', () => {
   currentFilePath = undefined;
+  currentReferenceData = undefined;
 });
 
 ipcMain.on('quit', () => {
   app.quit();
+});
+
+ipcMain.on('choose-reference-file', () => {
+  currentReferenceData = chooseReferenceFile();
+  if (currentReferenceData) {
+    mainWindow.webContents.send('reference-data-changed', currentReferenceData);
+  }
+});
+
+ipcMain.on('remove-reference-data', () => {
+  currentReferenceData = undefined;
+  mainWindow.webContents.send('reference-data-changed', undefined);
+});
+
+ipcMain.on('open-referenced-file-external', () => {
+  shell.openItem(currentReferenceData.data);
 });
 
 // tslint:disable-next-line:max-func-body-length
@@ -226,12 +253,19 @@ function newMenuItemHandler(): void {
 function openMenuItemHandler(): void {
   dialog.showOpenDialog(
     mainWindow,
-    { properties: ['openFile'] }
+    {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Lyric Files', extensions: ['lyrics'] },
+        { name: 'Text Files', extensions: ['txt'] },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
   )
     .then((value: OpenDialogReturnValue) => {
-      if (value.filePaths) {
+      if (value.filePaths?.length > 0) {
         const filePath: string = value.filePaths[0];
-        openFile(filePath);
+        openLyricsFile(filePath);
       }
     })
     .catch(() => {
@@ -239,10 +273,25 @@ function openMenuItemHandler(): void {
     });
 }
 
-function openFile(filePath: string): void {
+function openLyricsFile(filePath: string): void {
   readFile(filePath, 'utf8', (error: Error, data: string) => {
     currentFilePath = filePath;
-    mainWindow.webContents.send('file-opened', error, filePath, data);
+
+    let editorText: string = data;
+    const firstLine: string = data.substring(0, data.indexOf('\n'));
+    const hasReferencedData: boolean = isValidHeader(firstLine);
+    if (hasReferencedData && currentFilePath.endsWith('lyrics')) {
+      editorText = data.substr(data.indexOf('\n') + 1);
+      currentReferenceData = parseReferencedData(firstLine);
+    } else {
+      currentReferenceData = undefined;
+    }
+
+    mainWindow.webContents.send('file-opened', error, filePath, editorText);
+
+    if (currentReferenceData) {
+      mainWindow.webContents.send('reference-data-changed', currentReferenceData);
+    }
     addToRecentFiles(filePath);
   });
 }
@@ -259,7 +308,12 @@ function saveMenuItemHandler(): void {
 function saveAsHandler(): void {
   dialog.showSaveDialog(
     mainWindow,
-    { filters: [{ name: 'Text Files', extensions: ['txt'] }] }
+    {
+      filters: [
+        { name: 'Lyric Files', extensions: ['lyrics'] },
+        { name: 'Text Files', extensions: ['txt'] }
+      ]
+    }
   )
     .then((value: SaveDialogReturnValue) => {
       if (value.filePath) {
@@ -302,7 +356,7 @@ function createRecentFilesSubmenu(loadedRecentFiles?: string[]): MenuItemConstru
   return validRecentFiles.map((filePath: string) => {
     return {
       label: filePath,
-      click: (): void => { openFile(filePath); }
+      click: (): void => { openLyricsFile(filePath); }
     };
   });
 }
@@ -327,5 +381,31 @@ function addToRecentFiles(filePath: string): void {
       setMenu(recentFiles);
     });
   });
+}
 
+function chooseReferenceFile(): ReferencedData | undefined {
+  const filePaths: string[] = dialog.showOpenDialogSync(
+    mainWindow,
+    {
+      properties: ['openFile'],
+      filters: [
+        { name: 'Audio Files', extensions: getSupportedAudioFileExtensions() },
+        { name: 'All Files', extensions: ['*'] }
+      ]
+    }
+  );
+
+  if (filePaths?.length > 0) {
+    return new ReferencedData('file', filePaths[0]);
+  }
+
+  return undefined;
+}
+
+function getWindowBackgroundColor(): string {
+  if (nativeTheme.shouldUseDarkColors) {
+    return '#141414';
+  } else {
+    return '#fafafa';
+  }
 }

@@ -20,16 +20,12 @@
         ],
         "no-submodule-imports": [
             true,
-            "rxjs",
-            "brace"
-        ],
-        "no-import-side-effect": [
-            true,
-            "brace"
+            "rxjs"
         ],
         "no-any": false,
         "interface-name": false,
         "completed-docs": false,
-        "strict-boolean-expressions": false
+        "strict-boolean-expressions": false,
+        "import-name": false
     }
 }
